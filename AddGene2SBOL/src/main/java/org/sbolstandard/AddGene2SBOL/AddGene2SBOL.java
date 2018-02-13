@@ -241,7 +241,10 @@ public class AddGene2SBOL {
 			activityURI = genericTopLevel.getIdentity();
 
 			// Create collection
-			sbh.login("<login>", "<password>");
+			System.out.println(args[0]);
+			System.out.println(args[1]);
+			System.out.println(args[2]);
+			sbh.login(args[0], args[1]);
 			if (start==0)
 				sbh.createCollection("AddGenePlasmids", "1", "AddGene Plasmids", "These are the AddGene plasmids", "", true, document);
 			//document.write(System.out);
@@ -250,8 +253,7 @@ public class AddGene2SBOL {
 		}
 		// Parse JSON
 		JSONParser parser = new JSONParser();
-		JSONObject o = (JSONObject) parser.parse(new FileReader(
-				"/Users/myers/research/nobackup/workspace/AddGene2SBOL/src/main/resources/addgene-plasmids-sequences.json"));
+		JSONObject o = (JSONObject) parser.parse(new FileReader(args[2]));
 
 		JSONArray plasmids = (JSONArray) o.get("plasmids");
 		int i = 0;
