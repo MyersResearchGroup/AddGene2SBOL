@@ -223,7 +223,8 @@ public class AddGene2SBOL {
 		SynBioHubFrontend sbh = new SynBioHubFrontend("https://synbiohub.utah.edu");
 		URI activity = null;
 //		SynBioHubFrontend sbh = new SynBioHubFrontend("http://localhost:7777","https://synbiohub.org");
-
+		int start = 14372;
+		
 		try {
 			// Create an Activity
 			GenericTopLevel genericTopLevel = document.createGenericTopLevel("addgene2sbol", version, 
@@ -241,7 +242,8 @@ public class AddGene2SBOL {
 
 			// Create collection
 			sbh.login("<login>", "<password>");
-			sbh.createCollection("AddGenePlasmids", "1", "AddGene Plasmids", "These are the AddGene plasmids", "", true, document);
+			if (start==0)
+				sbh.createCollection("AddGenePlasmids", "1", "AddGene Plasmids", "These are the AddGene plasmids", "", true, document);
 			//document.write(System.out);
 		} catch (Exception e) {
 			e.printStackTrace();
@@ -258,6 +260,7 @@ public class AddGene2SBOL {
 		int failure = 0;
 		for (Object p : plasmids) {
 			i++;
+			if (i < start) continue;
 			document = new SBOLDocument(); 
 			document.setDefaultURIprefix(uriPrefix); 
 			//document.setComplete(true); 
