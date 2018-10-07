@@ -10,6 +10,12 @@
   <name>AddGene2SBOL</name>
   <url>http://maven.apache.org</url>
 
+  <repositories>
+	<repository>
+		<id>ossrh</id>
+		<url>https://oss.sonatype.org/content/repositories/snapshots</url>
+	</repository>
+  </repositories>
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
