@@ -2,8 +2,12 @@ package org.sbolstandard.AddGene2SBOL;
 
 import java.io.File;
 import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.StringWriter;
 import java.net.URI;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
@@ -14,6 +18,18 @@ import java.util.TimeZone;
 
 import javax.xml.namespace.QName;
 
+import org.apache.commons.io.IOUtils;
+import org.apache.commons.lang3.StringEscapeUtils;
+import org.apache.http.HttpEntity;
+import org.apache.http.HttpResponse;
+import org.apache.http.client.HttpClient;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.client.methods.HttpRequestBase;
+import org.apache.http.entity.mime.HttpMultipartMode;
+import org.apache.http.entity.mime.MultipartEntityBuilder;
+import org.apache.http.impl.client.HttpClients;
+import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
@@ -46,6 +62,7 @@ public class AddGene2SBOL {
 	//private static String dcTermsNS = "http://purl.org/dc/terms/";
 	private static String addgeneNS = "http://addgene.org/Terms/addgene#";
 	private static String oboNS = "http://purl.obolibrary.org/obo/";
+	private static String sbhNS = "http://wiki.synbiohub.org/wiki/Terms/synbiohub#";
 
 	static URI activityURI;
 	static String createdDate;
@@ -123,7 +140,7 @@ public class AddGene2SBOL {
 	private static void addgeneStringAnnotation(List<Annotation> annotations, JSONObject object, String tag) throws SBOLValidationException {
 		String annotationValue = object.get(tag)!=null?object.get(tag).toString():null;
 		if (annotationValue!=null && !annotationValue.equals("")) {
-			Annotation annotation = new Annotation(new QName(addgeneNS,tag,"ag"), annotationValue);
+			Annotation annotation = new Annotation(new QName(addgeneNS,tag,"ag"), filterContent(annotationValue));
 			annotations.add(annotation);
 		}
 	}
@@ -131,7 +148,7 @@ public class AddGene2SBOL {
 	private static void addgeneStringAnnotationArray(List<Annotation> annotations, JSONObject object, String tag) throws SBOLValidationException {
 		JSONArray annotationValues = (JSONArray)object.get(tag);
 		for (Object annotationValue : annotationValues) {
-			Annotation annotation = new Annotation(new QName(addgeneNS,tag,"ag"), (String)annotationValue);
+			Annotation annotation = new Annotation(new QName(addgeneNS,tag,"ag"), filterContent((String)annotationValue));
 			annotations.add(annotation);
 		}
 	}
@@ -139,7 +156,7 @@ public class AddGene2SBOL {
 	private static void createAddgeneStringAnnotation(TopLevel topLevel,JSONObject plasmid, String tag) throws SBOLValidationException {
 		String annotation = plasmid.get(tag)!=null?plasmid.get(tag).toString():null;
 		if (annotation!=null && !annotation.equals("")) {
-			topLevel.createAnnotation(new QName(addgeneNS,tag,"ag"), annotation);
+			topLevel.createAnnotation(new QName(addgeneNS,tag,"ag"), filterContent(annotation));
 		}
 	}
 		
@@ -233,7 +250,8 @@ public class AddGene2SBOL {
 	private static void createCreatorAnnotations(TopLevel topLevel, JSONObject plasmid) throws SBOLValidationException {
 		JSONArray pis = (JSONArray)plasmid.get("pi");
 		for (Object pi : pis) {
-			topLevel.createAnnotation(new QName(dcNS,"creator","dc"), (String)pi);
+//			topLevel.createAnnotation(new QName(dcNS,"creator","dc"), (long)pi);
+			topLevel.createAnnotation(new QName(addgeneNS,"pi","ag"), ((Long)pi).toString());
 		}
 	}
 		
@@ -272,7 +290,7 @@ public class AddGene2SBOL {
 		addgeneStringAnnotation(annotations,cloning,"sequencing_primer_5");
 		addgeneStringAnnotationArray(annotations,cloning,"vector_types");
 		topLevel.createAnnotation(new QName(addgeneNS,"cloning","ag"), new QName(addgeneNS,"Cloning","ag"), 
-				URI.create(topLevel.getPersistentIdentity().toString()+"/cloning"), annotations);
+				"cloning", annotations);
 	}
 	
 	private static void createTagAnnotation(List<Annotation> tagAnnotations, JSONObject object, 
@@ -353,7 +371,7 @@ public class AddGene2SBOL {
 			addgeneStringAnnotation(annotations,(JSONObject)insert,"size");
 			createTagAnnotation(annotations,(JSONObject)insert,topLevel.getPersistentIdentity().toString()+"/insert"+i);
 			topLevel.createAnnotation(new QName(addgeneNS,"insert","ag"), new QName(addgeneNS,"Insert","ag"), 
-					URI.create(topLevel.getPersistentIdentity().toString()+"/insert"+i), annotations);
+					"insert"+i, annotations);
 			i++;
 		}
 	}
@@ -522,33 +540,143 @@ public class AddGene2SBOL {
 //		if (true) return;
 	}
 	
-	private static ComponentDefinition createComponentDefinition(SBOLDocument document, String sequence, String displayId, 
+	static class HttpStream
+	{
+		public InputStream inputStream;
+		public HttpRequestBase request;
+	}
+	
+	private static String inputStreamToString(InputStream inputStream) throws IOException
+	{
+		StringWriter writer = new StringWriter();
+
+		IOUtils.copy(inputStream, writer);
+
+		return writer.toString();
+	}
+
+	private static void checkResponseCode(HttpResponse response) throws Exception
+	{
+		int statusCode = response.getStatusLine().getStatusCode();
+
+		if(statusCode >= 300)
+		{
+            switch(statusCode)
+            {
+            case 401:
+                throw new Exception("Permission exception");
+            
+            case 404:
+                throw new Exception("Not found exception");
+            
+            default:
+            	HttpEntity entity = response.getEntity();
+                try {
+					throw new Exception(inputStreamToString(entity.getContent()));
+				}
+				catch (UnsupportedOperationException | IOException e) {
+					throw new Exception(statusCode+"");
+				}
+            }
+        }
+    }
+	
+	private static HttpStream fetchContentAsInputStream(HttpClient client, String url, String user) throws Exception
+	{
+		HttpGet request = new HttpGet(url);
+		if (user!=null) {
+			request.setHeader("X-authorization", user);
+		}
+		request.setHeader("Accept", "text/plain");
+
+		try
+		{
+			HttpResponse response = client.execute(request);
+
+			checkResponseCode(response);
+
+			HttpStream res = new HttpStream();
+
+			res.inputStream = response.getEntity().getContent();
+			res.request = request;
+
+			return res;
+		}
+		catch(Exception e)
+		{
+			request.releaseConnection();
+
+			throw e;
+		}
+	}
+	
+	private static SBOLDocument fetchGenBank(String genbankUrl,String uriPrefix,String displayId,String version,String pngFileName,String name,boolean circular) {
+		PoolingHttpClientConnectionManager connectionManager;
+		HttpClient client;
+		SBOLDocument result = null;
+		connectionManager = new PoolingHttpClientConnectionManager();
+        client = HttpClients.custom().setConnectionManager(connectionManager).build();
+        
+		try
+		{
+			InputStream inputStream = fetchContentAsInputStream(client,genbankUrl,null).inputStream;
+			String oldUriPrefix = SBOLReader.getURIPrefix();
+			String oldDisplayId = SBOLReader.getDisplayId();
+			String oldVersion = SBOLReader.getVersion();
+			SBOLReader.setURIPrefix(uriPrefix);
+			SBOLReader.setDisplayId(displayId);
+			SBOLReader.setVersion(version);
+			result = SBOLReader.read(inputStream);
+			// TODO: set name and perhaps description
+			SBOLReader.setURIPrefix(oldUriPrefix);
+			SBOLReader.setDisplayId(oldDisplayId);
+			SBOLReader.setVersion(oldVersion);
+		}
+		catch (Exception e)
+		{
+			//e.printStackTrace();
+		}
+		return result;
+	}
+	
+	private static ComponentDefinition createComponentDefinition(SBOLDocument document, JSONObject seqObj, String displayId, 
 			String name,boolean circular) throws SBOLValidationException {
+		String sequence = null;
+		if (seqObj != null) {
+			sequence = seqObj.get("sequence").toString().trim();
+		}
 		if (sequence != null) {
 			SBOLDocument doc = SnapGene.detectFeatures(sequence,uriPrefix,displayId,version,"/tmp/addGene/"+displayId+".png",name,circular);
+//			SBOLDocument doc = fetchGenBank(seqObj.get("genbank_url").toString(),uriPrefix,displayId,version,"/tmp/addGene/"+displayId+".png",name,circular);
 			if (doc!=null) {
 				document.createCopy(doc);
 			}
 		}
 		ComponentDefinition cd = document.getComponentDefinition(displayId, version);
 		if (cd==null) {
-			cd = document.createComponentDefinition(displayId, version, ComponentDefinition.DNA);
+			cd = document.createComponentDefinition(displayId, version, ComponentDefinition.DNA_REGION);
 			if (sequence != null) {
-				document.createSequence(displayId+"_seq", version, sequence, Sequence.IUPAC_DNA);
+				Sequence seq = document.createSequence(displayId+"_seq", version, sequence, Sequence.IUPAC_DNA);
+				seq.setDescription(filterContent(seqObj.get("sequence_description").toString()));
+				cd.addSequence(seq);
 			}
 		}
 		return cd;
 	}
 	
 	private static boolean sequenceMismatch(JSONArray seqObj) {
-		String seqString = ((String)seqObj.get(0)).trim();
+		String seqString = ((JSONObject)seqObj.get(0)).get("sequence").toString().trim();
 		for (int j = 1; j < seqObj.size(); j++) {
-			String seqString2 = ((String)seqObj.get(j)).trim();
+			String seqString2 = ((JSONObject)seqObj.get(j)).get("sequence").toString().trim();
 			if (!seqString.equals(seqString2)) {
 				return true;
 			}
 		}
 		return false;
+	}
+	
+	private static String filterContent(String content) {
+	    return content.replaceAll("[^\\u0009\\u000a\\u000d\\u0020-\\uD7FF\\uE000-\\uFFFD]", "");
 	}
 	
 	public static void main( String[] args ) throws FileNotFoundException, IOException, ParseException, SynBioHubException, SBOLConversionException, SBOLValidationException 
@@ -574,7 +702,7 @@ public class AddGene2SBOL {
 			e1.printStackTrace();
 			return;
 		}
-		int start = 0;
+		int start = 50219;
 		
 		try {
 			// Create an Activity
@@ -591,8 +719,16 @@ public class AddGene2SBOL {
 			genericTopLevel.createAnnotation(new QName(provNS,"endedAtTime","prov"), createdDate);
 			activityURI = genericTopLevel.getIdentity();
 
-			if (start==0)
-				sbh.createCollection("AddgenePlasmids", "1", "Addgene Plasmids", "These are the Addgene plasmids", "", true, document);
+			if (start==-1) {
+				sbh.createCollection("AddgenePlasmids", "1", "Addgene Plasmids", 
+						"Addgene is a nonprofit biorepository dedicated to facilitating scientific discoveries by operating a plasmid library for researchers. " + 
+								"The repository contains over 65,000 plasmids contributed by research labs around the world. " +
+								"As of 2018, 1 million plasmids have been distributed to more than 85 countries by Addgene - with 11,000 plasmids currently shipping each month. "+
+								"Addgene also provides ready-to-use AAV and lentivirus preparations of commonly requested plasmids as a service to scientists - saving them time and providing thorough quality control. "+
+								"By authenticating, storing, archiving, and distributing plasmids, virus, and their associated data, Addgene is creating a lasting resource for research and discovery scientists around the world.", 
+								"", true, document);
+				start = 0;
+			}
 			//document.write(System.out);
 		} catch (Exception e) {
 			e.printStackTrace();
@@ -622,6 +758,27 @@ public class AddGene2SBOL {
 			document.setCreateDefaults(true);
 			JSONObject plasmid = (JSONObject) p;
 			String displayId = "addgene"+plasmid.get("id");
+//			if (i!=2089 && i!=8623 && i!=8624 && i!=14386 && i!=18916 && i!=21450 && i!=21996 && i!=22351 && i!=24920 && i!=25425 &&
+//					i!=25427 && i!=25429 && i!=25714 && i!=25716 && i!=25721 && i!=25722 && i!=26594 && i!=26679 && i!=27282 && i!=27283 && 
+//					i!=27284 && i!=27285 && i!=27286 && i!=27287 && i!=27288 && i!=27289 && i!=27290 && i!=27291 && i!=27292 && i!=27563 &&
+//					i!=37790 && i!=37791 && i!=37792 && i!=37995 && i!=38531 && i!=41547 && i!=45691 && i!=45961 && i!=46057 && i!=49946 &&
+//					i!=49947) {
+//				continue;
+//			}
+			try {
+				if (sbh.getSBOL(URI.create(args[3]+"/user/myers/AddgenePlasmids/"+displayId+"_plasmid/"+version),false)!=null) {
+					success++;
+					//time2 = System.nanoTime();
+					//String time = createTimeString(time1, time2);
+					//String totalTime = createTimeString(time0, time2);
+					//System.out.println(i + " out of " + size + ":"+displayId+" SUCCESS "+ success + " " +time + " (" + totalTime +")");
+					continue;
+				}
+				//System.out.println("NOT FOUND: "+args[3]+"/user/myers/AddgenePlasmids/"+displayId+"_plasmid/"+version);
+			} catch (Exception e) {
+				// not found
+				//System.out.println("NOT FOUND: "+args[3]+"/user/myers/AddgenePlasmids/"+displayId+"_plasmid/"+version);
+			}
 			String name = plasmid.get("name").toString();
 			try {
 				JSONObject sequences = (JSONObject) plasmid.get("sequences");
@@ -633,23 +790,23 @@ public class AddGene2SBOL {
 					JSONArray addFullSeqObj = (JSONArray)sequences.get("public_addgene_full_sequences");
 					JSONArray userFullSeqObj = (JSONArray)sequences.get("public_user_full_sequences");
 					if (addFullSeqObj.size()==1 && userFullSeqObj.size()==0) {
-						cd = createComponentDefinition(document,((String)addFullSeqObj.get(0)).trim(),displayId,name,true);
+						cd = createComponentDefinition(document,((JSONObject)addFullSeqObj.get(0)),displayId,name,true);
 						imp.setBuilt(cd.getIdentity());
 						imp.addWasDerivedFrom(cd.getIdentity());
 					} else if (addFullSeqObj.size()==0 && userFullSeqObj.size()==1) {
-						cd = createComponentDefinition(document,((String)userFullSeqObj.get(0)).trim(),displayId,name,true);
+						cd = createComponentDefinition(document,((JSONObject)userFullSeqObj.get(0)),displayId,name,true);
 						imp.setBuilt(cd.getIdentity());
 						imp.addWasDerivedFrom(cd.getIdentity());
 					} else if (addFullSeqObj.size()==1 && userFullSeqObj.size()==1 &&
-							((String)addFullSeqObj.get(0)).trim().equals((String)userFullSeqObj.get(0))) {
-						cd = createComponentDefinition(document,((String)addFullSeqObj.get(0)).trim(),displayId,name,true);
+							((JSONObject)addFullSeqObj.get(0)).get("sequence").toString().trim().equals(((JSONObject)userFullSeqObj.get(0)).get("sequence").toString())) {
+						cd = createComponentDefinition(document,((JSONObject)addFullSeqObj.get(0)),displayId,name,true);
 						imp.setBuilt(cd.getIdentity());
 						imp.addWasDerivedFrom(cd.getIdentity());
 					} else if (addFullSeqObj.size()==1 && userFullSeqObj.size()==1 &&
-							!((String)addFullSeqObj.get(0)).trim().equals((String)userFullSeqObj.get(0))) {
-						cd = createComponentDefinition(document,((String)addFullSeqObj.get(0)).trim(),displayId,name,true);
+							!((JSONObject)addFullSeqObj.get(0)).get("sequence").toString().trim().equals(((JSONObject)userFullSeqObj.get(0)).get("sequence").toString())) {
+						cd = createComponentDefinition(document,((JSONObject)addFullSeqObj.get(0)),displayId,name,true);
 						imp.setBuilt(cd.getIdentity());
-						ucd = createComponentDefinition(document,((String)userFullSeqObj.get(0)).trim(),displayId+"_user",name,true);
+						ucd = createComponentDefinition(document,((JSONObject)userFullSeqObj.get(0)),displayId+"_user",name,true);
 						imp.addWasDerivedFrom(ucd.getIdentity());
 					} else if (addFullSeqObj.size() > 1) {
 						if (sequenceMismatch(addFullSeqObj)) {
@@ -661,7 +818,7 @@ public class AddGene2SBOL {
 							//System.err.println(i + " out of " + size + ":"+displayId+" SKIP "+ a_mismatch + " " +time + " (" + totalTime +")");
 							continue;
 						} else {
-							cd = createComponentDefinition(document,((String)addFullSeqObj.get(0)).trim(),displayId,name,true);
+							cd = createComponentDefinition(document,((JSONObject)addFullSeqObj.get(0)),displayId,name,true);
 							imp.setBuilt(cd.getIdentity());
 							imp.addWasDerivedFrom(cd.getIdentity());
 						}
@@ -675,7 +832,7 @@ public class AddGene2SBOL {
 							//System.err.println(i + " out of " + size + ":"+displayId+" MULTIPLE USER FULL MISMATCH "+ u_mismatch + " " +time + " (" + totalTime +")");
 							continue;
 						} else {
-							cd = createComponentDefinition(document,((String)userFullSeqObj.get(0)).trim(),displayId,name,true);
+							cd = createComponentDefinition(document,((JSONObject)userFullSeqObj.get(0)),displayId,name,true);
 							imp.setBuilt(cd.getIdentity());
 							imp.addWasDerivedFrom(cd.getIdentity());
 						}
@@ -705,6 +862,7 @@ public class AddGene2SBOL {
 				createAddgeneStringAnnotation(imp,plasmid,"growth_notes");
 				createAddgeneStringAnnotation(imp,plasmid,"growth_strain");
 				createAddgeneStringAnnotation(imp,plasmid,"growth_temp");
+				addgeneStringAnnotationArray(imp.getAnnotations(),(JSONObject)plasmid,"viral_ids");
 				createInsertAnnotations(imp,plasmid);
 				createAddgeneStringAnnotation(imp,plasmid,"origin");
 				createCreatorAnnotations(document,imp,plasmid);
@@ -713,35 +871,39 @@ public class AddGene2SBOL {
 				List<Annotation> tagAnnotations = new ArrayList<Annotation>();
 				createTagAnnotation(tagAnnotations,plasmid,imp.getPersistentIdentity().toString());
 				if (tagAnnotations.size() > 0) {
-					imp.createAnnotation(new QName(addgeneNS,"tags","ag"), new QName(addgeneNS,"Tags","ag"), 
-							URI.create(imp.getPersistentIdentity()+"/tag"), tagAnnotations);
+					imp.createAnnotation(new QName(addgeneNS,"tags","ag"), new QName(addgeneNS,"Tags","ag"), "tag", tagAnnotations);
 				}
 				createAddgeneStringAnnotation(document,imp,plasmid,"terms");
 				imp.addWasDerivedFrom(URI.create(plasmid.get("url").toString()));
 				imp.setName(name);
+				imp.setDescription(filterContent(plasmid.get("description").toString()));
+				imp.createAnnotation(new QName(sbhNS, "mutableNotes", "sbh"), 
+						filterContent(plasmid.get("depositor_comments").toString()));
 				cd.setName(name);
+				cd.setDescription(filterContent(plasmid.get("description").toString()));
+				//cd.createAnnotation(new QName(sbhNS, "mutableNotes", "sbh"), plasmid.get("depositor_comments").toString());
 				if (ucd!=null) {
 					ucd.setName(name);
 				}
 				cd.addRole(URI.create(so + "SO:0000155"));
 				JSONArray addPartialSeqObj = (JSONArray)sequences.get("public_addgene_partial_sequences");
 				for (int j = 0; j < addPartialSeqObj.size(); j++) {
-					String seqString = ((String)addPartialSeqObj.get(j)).trim();
-					ComponentDefinition subCD = createComponentDefinition(document,seqString,displayId+"_addgene_partial"+j,null,false);
+					String seqString = ((JSONObject)addPartialSeqObj.get(j)).get("sequence").toString().trim();
+					ComponentDefinition subCD = createComponentDefinition(document,((JSONObject)addPartialSeqObj.get(j)),displayId+"_addgene_partial"+j,null,false);
 					Component comp = cd.createComponent(displayId+"_addgene_partial"+j, AccessType.PRIVATE, subCD.getIdentity());
 					Sequence fullSeq = cd.getSequenceByEncoding(Sequence.IUPAC_DNA);
 					if (fullSeq!=null) {
 						String fullSeqStr = fullSeq.getElements();
-						if (fullSeqStr.indexOf(seqString) >= 0) {
-							SequenceAnnotation sa = cd.createSequenceAnnotation(displayId+"_addgene_partial_annotation"+j, "range", fullSeqStr.indexOf(seqString)+1, seqString.length());
+						if (seqString.length() > 0 && fullSeqStr.indexOf(seqString) >= 0) {
+							SequenceAnnotation sa = cd.createSequenceAnnotation(displayId+"_addgene_partial_annotation"+j, "range", fullSeqStr.indexOf(seqString)+1, fullSeqStr.indexOf(seqString)+seqString.length());
 							sa.setComponent(comp.getIdentity());
 						}
 					}
 				}			
 				JSONArray userPartialSeqObj = (JSONArray)sequences.get("public_user_partial_sequences");
 				for (int j = 0; j < userPartialSeqObj.size(); j++) {
-					String seqString = ((String)userPartialSeqObj.get(j)).trim();
-					ComponentDefinition subCD = createComponentDefinition(document,seqString,displayId+"_user_partial"+j,null,false);
+					String seqString = ((JSONObject)userPartialSeqObj.get(j)).get("sequence").toString().trim();
+					ComponentDefinition subCD = createComponentDefinition(document,((JSONObject)userPartialSeqObj.get(j)),displayId+"_user_partial"+j,null,false);
 					ComponentDefinition topCD = cd;
 					if (ucd!=null) {
 						topCD = ucd;
@@ -750,8 +912,8 @@ public class AddGene2SBOL {
 					Sequence fullSeq = topCD.getSequenceByEncoding(Sequence.IUPAC_DNA);
 					if (fullSeq!=null) {
 						String fullSeqStr = fullSeq.getElements();
-						if (fullSeqStr.indexOf(seqString) >= 0) {
-							SequenceAnnotation sa = topCD.createSequenceAnnotation(displayId+"_user_partial_annotation"+j, "range", fullSeqStr.indexOf(seqString)+1, seqString.length());
+						if (seqString.length() > 0 && fullSeqStr.indexOf(seqString) >= 0) {
+							SequenceAnnotation sa = topCD.createSequenceAnnotation(displayId+"_user_partial_annotation"+j, "range", fullSeqStr.indexOf(seqString)+1, fullSeqStr.indexOf(seqString)+seqString.length());
 							sa.setComponent(comp.getIdentity());
 						}
 					}
@@ -788,6 +950,7 @@ public class AddGene2SBOL {
 				time2 = System.nanoTime();
 				String time = createTimeString(time1, time2);
 				String totalTime = createTimeString(time0, time2);
+				document.write("/tmp/addGene/"+displayId+".xml");
 	        	System.out.println(i + " out of " + size + ":"+displayId+" FAILURE "+ failure + " " +time + " (" + totalTime +")");
 	        	System.err.println(i + " out of " + size + ":"+displayId+" FAILURE "+ failure + " " +time + " (" + totalTime +")");
 	        	e.printStackTrace(System.err);
