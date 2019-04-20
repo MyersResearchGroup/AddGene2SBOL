@@ -293,23 +293,20 @@ public class AddGene2SBOL {
 				"cloning", annotations);
 	}
 	
-	private static void createTagAnnotation(List<Annotation> tagAnnotations, JSONObject object, 
-			String nestedUriPrefix) throws SBOLValidationException {
+	private static void createTagAnnotation(Annotation tagAnnotation, JSONObject object) throws SBOLValidationException {
 		JSONArray tags = (JSONArray)object.get("tags");
 		int i = 0;
 		for (Object tag : tags) {
 			List<Annotation> annotations = new ArrayList<Annotation>();
 			addgeneStringAnnotation(annotations,(JSONObject)tag,"location");
 			addgeneStringAnnotation(annotations,(JSONObject)tag,"tag");
-			Annotation annotation = new Annotation(new QName(addgeneNS,"tagElement","ag"), new QName(addgeneNS,"TagElement","ag"), 
-					URI.create(nestedUriPrefix+"/tagElement"+i), annotations);
+			tagAnnotation.createAnnotation(new QName(addgeneNS,"tagElement","ag"), new QName(addgeneNS,"TagElement","ag"), 
+					"tagElement"+i, annotations);
 			i++;
-			tagAnnotations.add(annotation);
 		}	
 	}
 	
-	private static void createInsertCloningAnnotations(List<Annotation> insertAnnotations, 
-			JSONObject insert, int i, String nestedUriPrefix) throws SBOLValidationException {
+	private static void createInsertCloningAnnotations(Annotation insertAnnotation, JSONObject insert) throws SBOLValidationException {
 		JSONObject cloning = (JSONObject)insert.get("cloning");
 		if (cloning==null) return;
 		List<Annotation> annotations = new ArrayList<Annotation>();
@@ -321,14 +318,11 @@ public class AddGene2SBOL {
 		addgeneStringAnnotation(annotations,(JSONObject)cloning,"sequencing_primer_5");
 		addgeneStringAnnotation(annotations,(JSONObject)cloning,"site_3_destroyed");
 		addgeneStringAnnotation(annotations,(JSONObject)cloning,"site_5_destroyed");
-		Annotation annotation = new Annotation(new QName(addgeneNS,"cloning","ag"), new QName(addgeneNS,"Cloning","ag"), 
-				URI.create(nestedUriPrefix+"/insert"+i+"/cloning"), annotations);
-		i++;
-		insertAnnotations.add(annotation);
+		insertAnnotation.createAnnotation(new QName(addgeneNS,"cloning","ag"), new QName(addgeneNS,"Cloning","ag"), 
+				"cloning", annotations);
 	}
 	
-	private static void createInsertEntrezGeneAnnotations(List<Annotation> insertAnnotations, 
-			JSONObject insert, int insertNum, String nestedUriPrefix) throws SBOLValidationException {
+	private static void createInsertEntrezGeneAnnotations(Annotation insertAnnotation, JSONObject insert) throws SBOLValidationException {
 		JSONArray entrezGenes = (JSONArray)insert.get("entrez_gene");
 		int i = 0;
 		for (Object entrezGene : entrezGenes) {
@@ -336,10 +330,8 @@ public class AddGene2SBOL {
 			addgeneStringAnnotation(annotations,(JSONObject)entrezGene,"aliases");
 			addgeneStringAnnotation(annotations,(JSONObject)entrezGene,"gene");
 			addgeneStringAnnotation(annotations,(JSONObject)entrezGene,"id");
-			Annotation annotation = new Annotation(new QName(addgeneNS,"entrezGene","ag"), new QName(addgeneNS,"EntrezGene","ag"), 
-					URI.create(nestedUriPrefix+"/insert"+ insertNum +"/entrezGene"+i), annotations);
-			i++;
-			insertAnnotations.add(annotation);
+			insertAnnotation.createAnnotation(new QName(addgeneNS,"entrezGene","ag"), new QName(addgeneNS,"EntrezGene","ag"), 
+					"entrezGene"+i, annotations);
 		}	
 	}
 	
@@ -361,17 +353,17 @@ public class AddGene2SBOL {
 		for (Object insert : inserts) {
 			List<Annotation> annotations = new ArrayList<Annotation>();
 			addgeneStringAnnotationArray(annotations,(JSONObject)insert,"alt_names");
-			createInsertCloningAnnotations(annotations,(JSONObject)insert,i,topLevel.getPersistentIdentity().toString());
-			createInsertEntrezGeneAnnotations(annotations,(JSONObject)insert,i,topLevel.getPersistentIdentity().toString());
 			createInsertSpeciesAnnotations(annotations,(JSONObject)insert);
 			addgeneStringAnnotationArray(annotations,(JSONObject)insert,"genbank_ids");
 			addgeneStringAnnotation(annotations,(JSONObject)insert,"mutation");
 			addgeneStringAnnotation(annotations,(JSONObject)insert,"name");
 			addgeneStringAnnotation(annotations,(JSONObject)insert,"shRNA_sequence");
 			addgeneStringAnnotation(annotations,(JSONObject)insert,"size");
-			createTagAnnotation(annotations,(JSONObject)insert,topLevel.getPersistentIdentity().toString()+"/insert"+i);
-			topLevel.createAnnotation(new QName(addgeneNS,"insert","ag"), new QName(addgeneNS,"Insert","ag"), 
+			Annotation tagAnnotation = topLevel.createAnnotation(new QName(addgeneNS,"insert","ag"), new QName(addgeneNS,"Insert","ag"), 
 					"insert"+i, annotations);
+			createInsertCloningAnnotations(tagAnnotation,(JSONObject)insert);
+			createInsertEntrezGeneAnnotations(tagAnnotation,(JSONObject)insert);
+			createTagAnnotation(tagAnnotation,(JSONObject)insert);
 			i++;
 		}
 	}
@@ -702,7 +694,7 @@ public class AddGene2SBOL {
 			e1.printStackTrace();
 			return;
 		}
-		int start = 50219;
+		int start = -1;
 		
 		try {
 			// Create an Activity
@@ -869,9 +861,9 @@ public class AddGene2SBOL {
 				createAddgeneStringAnnotation(imp,plasmid,"plasmid_copy");
 				createAddgeneStringAnnotationArray(imp,plasmid,"resistance_markers");
 				List<Annotation> tagAnnotations = new ArrayList<Annotation>();
-				createTagAnnotation(tagAnnotations,plasmid,imp.getPersistentIdentity().toString());
-				if (tagAnnotations.size() > 0) {
-					imp.createAnnotation(new QName(addgeneNS,"tags","ag"), new QName(addgeneNS,"Tags","ag"), "tag", tagAnnotations);
+				if (((JSONArray)plasmid.get("tags")).size() > 0) {
+					Annotation tagAnnotation = imp.createAnnotation(new QName(addgeneNS,"tags","ag"), new QName(addgeneNS,"Tags","ag"), "tag", tagAnnotations);
+					createTagAnnotation(tagAnnotation,plasmid);
 				}
 				createAddgeneStringAnnotation(document,imp,plasmid,"terms");
 				imp.addWasDerivedFrom(URI.create(plasmid.get("url").toString()));
